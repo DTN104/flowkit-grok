@@ -158,7 +158,7 @@ async def get_providers(live: bool = False):
 
 @router.get("/models")
 async def get_provider_models(
-    provider: str = Query(..., description="claude | agy | codex"),
+    provider: str = Query(..., description="claude | agy | codex | grok"),
     refresh: bool = Query(False, description="Bypass the 5-minute catalog cache"),
 ):
     """List a provider's models.

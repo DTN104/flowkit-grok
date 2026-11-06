@@ -12,6 +12,7 @@ agent/active_project.json
 # Generated AI tool configs (run: python setup.py)
 .claude/commands/fk-*
 .agents/skills/fk-*
+.grok/skills/fk-*
 AGENTS.md
 .fk-setup.json
 

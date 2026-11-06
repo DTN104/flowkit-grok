@@ -1,11 +1,11 @@
 """What each AI reviewer accepts, and which one a given role runs on.
 
-Three CLIs back the vision work: Claude Code (`claude`), Google Antigravity
-(`agy`) and OpenAI Codex (`codex`). They disagree about almost everything —
+Four CLIs back the vision work: Claude Code (`claude`), Google Antigravity
+(`agy`), OpenAI Codex (`codex`) and xAI Grok (`grok`). They disagree about almost everything —
 flag names, effort ladders, whether an unknown model slug is an error — so the
 differences live here rather than being re-derived at each call site.
 
-A fourth reviewer, `muse`, is the agent itself (Muse, Codex, or agy — whichever agent is running these skills): no binary, no
+A fifth reviewer, `muse`, is the agent itself (Muse, Codex, or agy — whichever agent is running these skills): no binary, no
 model catalog, no effort ladder. It is an official provider option, not a
 default — a role pointed at `muse` means the agent scores contact sheets by
 hand via the review-sheets / review-submit endpoints (see `/fk-review-video`).
@@ -37,6 +37,7 @@ PROVIDER_BINARIES = {
     "claude": "claude",
     "agy": "agy",
     "codex": "codex",
+    "grok": "grok",
     # `muse` has no binary: the reviewer IS the agent itself, reading
     # contact sheets through its own vision and scoring via review-submit.
     "muse": None,
@@ -51,6 +52,10 @@ PROVIDER_EFFORTS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),
     "agy": ("low", "medium", "high"),
     "codex": ("low", "medium", "high", "xhigh", "max"),
+    # grok's documented --effort ladder is none|minimal|low|medium|high|xhigh|max;
+    # like codex the real ladder is per-model (`reasoning_efforts` in its cache).
+    # none/minimal are left out — a reviewer that does not think is no reviewer.
+    "grok": ("low", "medium", "high", "xhigh", "max"),
     "muse": (),
 }
 
@@ -65,6 +70,7 @@ PROVIDER_MODEL_ENCODES_EFFORT = {
     "claude": False,
     "agy": True,
     "codex": False,
+    "grok": False,
     "muse": False,
 }
 
@@ -77,6 +83,9 @@ PROVIDER_CATALOG_IS_AUTHORITATIVE = {
     "claude": False,
     "agy": True,
     "codex": False,
+    # grok accepts custom models declared in ~/.grok/config.toml (BYOK, Ollama),
+    # which its cache of the xAI catalog knows nothing about.
+    "grok": False,
     "muse": False,
 }
 
@@ -90,6 +99,7 @@ _CLAUDE_ALIASES = [
 ]
 
 _CODEX_MODELS_CACHE = Path.home() / ".codex" / "models_cache.json"
+_GROK_MODELS_CACHE = Path.home() / ".grok" / "models_cache.json"
 
 # Roles are the jobs an AI CLI does for Flow Kit. One today; the shape is a map
 # so adding the next one is a dict entry rather than a schema change.
@@ -154,7 +164,7 @@ async def validate_role_entry(role: str, entry: dict) -> dict:
     """Normalise one role entry from an API body. Raises ValueError on bad input.
 
     The model is checked against the catalog only where the catalog is closed
-    (agy) — see PROVIDER_CATALOG_IS_AUTHORITATIVE. For claude and codex an
+    (agy) — see PROVIDER_CATALOG_IS_AUTHORITATIVE. For claude, codex and grok an
     unlisted slug is a legitimate escape hatch, not a typo.
     """
     if role not in ROLES:
@@ -285,6 +295,35 @@ def _list_codex_models() -> list[dict]:
     return models
 
 
+def _list_grok_models() -> list[dict]:
+    """Read grok's own on-disk catalog.
+
+    `grok models` refuses to list anything while signed out and talks to the
+    network when signed in; the cache the CLI keeps is cheaper and works for a
+    server process either way.
+    """
+    if not _GROK_MODELS_CACHE.exists():
+        return []
+    with open(_GROK_MODELS_CACHE, encoding="utf-8") as f:
+        data = json.load(f)
+    models = []
+    for slug, entry in (data.get("models") or {}).items():
+        info = entry.get("info") if isinstance(entry, dict) else None
+        if not isinstance(info, dict) or info.get("hidden"):
+            continue
+        efforts = [
+            e.get("id")
+            for e in info.get("reasoning_efforts") or []
+            if isinstance(e, dict) and e.get("id")
+        ]
+        models.append({
+            "id": info.get("id") or slug,
+            "label": info.get("name") or slug,
+            "efforts": efforts,
+        })
+    return models
+
+
 async def list_models(provider: str, force: bool = False) -> list[dict]:
     """Model catalog for `provider`, TTL-cached.
 
@@ -311,6 +350,8 @@ async def list_models(provider: str, force: bool = False) -> list[dict]:
             models = await _list_agy_models()
         elif provider == "codex":
             models = await asyncio.to_thread(_list_codex_models)
+        elif provider == "grok":
+            models = await asyncio.to_thread(_list_grok_models)
         else:
             models = list(_CLAUDE_ALIASES)
     except Exception as e:

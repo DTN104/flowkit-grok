@@ -1,7 +1,7 @@
 """Video review engine — frame extraction + AI vision analysis.
 
 Two analysis backends:
-  1. CLI subprocess (claude/agy/codex, default) — no API key needed, uses contact sheets
+  1. CLI subprocess (claude/agy/codex/grok, default) — no API key needed, uses contact sheets
   2. Anthropic SDK (if ANTHROPIC_API_KEY set) — direct API, individual frames
 """
 import asyncio
@@ -483,7 +483,7 @@ def _parse_json_response(raw: str) -> dict:
 # ─── Backend 1: CLI providers (default, no API key needed) ───
 
 # PROVIDER_BINARIES and resolve_role are imported from agent.services.cli_providers,
-# which is where everything the three CLIs disagree about now lives.
+# which is where everything the four CLIs disagree about now lives.
 
 
 async def _communicate_with_timeout(proc, provider: str) -> tuple:
@@ -496,7 +496,7 @@ async def _communicate_with_timeout(proc, provider: str) -> tuple:
 
 
 async def _spawn_and_check(args: tuple, provider: str) -> bytes:
-    # stdin is closed deliberately. All three CLIs read piped stdin when it is
+    # stdin is closed deliberately. All four CLIs read piped stdin when it is
     # not a terminal and append it to the prompt — codex says so in its own
     # --help ("stdin is appended as a `<stdin>` block"). Under uvicorn stdin is
     # whatever the launching shell handed down, which is nothing we want in a
@@ -522,7 +522,7 @@ async def _spawn_and_check(args: tuple, provider: str) -> bytes:
 
 
 def _model_effort_args(model: str | None, effort: str | None) -> list:
-    """claude and agy happen to spell these the same way; codex does not."""
+    """claude, agy and grok happen to spell these the same way; codex does not."""
     args = []
     if model:
         args += ["--model", model]
@@ -672,6 +672,75 @@ async def _run_codex_cli(
         out_path.unlink(missing_ok=True)
 
 
+# grok's headless mode is agentic too. --tools read_file strips every other
+# built-in tool (shell, edit, web, subagents) rather than merely gating them, so
+# reading the sheets is the only thing the run *can* do — no permission prompt
+# to hang on and no --always-approve. Verified against grok 1.0.41: read_file
+# hands the model the image itself, and it describes it correctly.
+_GROK_READ_STEER = (
+    "Use your file-reading tool to read the image file(s). "
+    "Do NOT run any shell command."
+)
+
+
+def _parse_grok_envelope(raw: str) -> str:
+    """Pull the answer out of `grok --output-format json`, or explain the silence."""
+    raw = raw.strip()
+    if not raw:
+        raise RuntimeError("grok CLI returned no output")
+    try:
+        env = json.loads(raw)
+    except json.JSONDecodeError:
+        # Sign-in and startup errors can arrive as bare prose on a zero exit.
+        raise RuntimeError(f"grok CLI returned non-JSON output: {raw[:300]}")
+    if not isinstance(env, dict):
+        raise RuntimeError(f"grok CLI returned unexpected JSON: {raw[:300]}")
+
+    text = (env.get("text") or "").strip()
+    stop = env.get("stopReason")
+    if stop is not None and stop != "end_turn":
+        raise RuntimeError(f"grok CLI stopped with stopReason={stop!r}: {text[:300]}")
+    turns = env.get("num_turns")
+    if isinstance(turns, int) and turns < 2:
+        # A read needs a tool call and then a second model response to answer
+        # from its result. One turn means the review was written from the
+        # prompt alone — which carries the rubric and both scene prompts, enough
+        # for a plausible score that never looked at a frame. Same hazard as
+        # agy's denied reads, caught the same way: by refusing the answer.
+        raise RuntimeError(
+            f"grok CLI answered in {turns} turn without reading the contact "
+            f"sheets — its {len(text)}-character answer cannot be trusted to "
+            f"have come from the images"
+        )
+    if not text:
+        raise RuntimeError("grok CLI returned an empty response")
+    return text
+
+
+async def _run_grok_cli(
+    prompt: str,
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+    add_dirs: tuple = (),
+) -> str:
+    # grok has no --add-dir; the sheets' directory becomes its workspace instead,
+    # which also keeps the run from picking up this repo's AGENTS.md and skills.
+    args = [
+        "grok", "-p", prompt,
+        "--output-format", "json",
+        "--tools", "read_file",
+        "--no-subagents",
+        "--disable-web-search",
+        "--max-turns", "6",
+    ]
+    if add_dirs:
+        args += ["--cwd", os.path.commonpath([str(d) for d in add_dirs])]
+    args += _model_effort_args(model, effort)
+    stdout = await _spawn_and_check(tuple(args), "grok")
+    return _parse_grok_envelope(stdout.decode())
+
+
 async def _analyze_cli(
     contact_sheets: list[Path],
     n_frames: int,
@@ -742,11 +811,15 @@ async def _analyze_cli(
             read_instruction = f"Read the images at: {sheet_list}, in that order."
         if provider == "agy":
             read_instruction = f"{read_instruction} {_AGY_READ_STEER}"
+        elif provider == "grok":
+            read_instruction = f"{read_instruction} {_GROK_READ_STEER}"
         full_prompt = f"{read_instruction} {sheet_intro}\n\n{base_prompt}"
         # The sheets live in a TemporaryDirectory outside the server's cwd;
         # naming it keeps the read inside a workspace the CLI was told about.
         add_dirs = tuple(sorted({str(Path(s).parent) for s in contact_sheets}))
-        runner = {"claude": _run_claude_cli, "agy": _run_agy_cli}[provider]
+        runner = {
+            "claude": _run_claude_cli, "agy": _run_agy_cli, "grok": _run_grok_cli,
+        }[provider]
         raw = await runner(
             full_prompt, model=role["model"], effort=role["effort"], add_dirs=add_dirs
         )

@@ -516,9 +516,12 @@ async def _handle_failure(rid: str, req: dict, result: dict, retry_after: dict =
                      rid[:8], error_msg)
         return
 
-    # A capability the batch path does not have, or a missing Flow project, is
-    # a configuration answer — not something a retry can reach. Fail it once.
-    if "unsupported_on_batch_api" in error_lower or "no_flow_project" in error_lower:
+    # A capability the batch path does not have, a missing Flow project, an
+    # exhausted Grok plan or a Grok moderation block is an answer — not
+    # something a retry can reach. Fail it once.
+    if ("unsupported_on_batch_api" in error_lower or "no_flow_project" in error_lower
+            or "grok_quota" in error_lower or "grok_moderation" in error_lower
+            or "grok_zdr" in error_lower):
         await crud.update_request(rid, status="FAILED", error_message=str(error_msg))
         await _mark_scene_failed(req)
         logger.error("Request %s FAILED (not retryable): %s", rid[:8], error_msg)

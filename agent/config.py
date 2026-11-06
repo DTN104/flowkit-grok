@@ -1,6 +1,7 @@
 """Configuration constants."""
 import json
 import os
+import tempfile
 from pathlib import Path
 
 # ─── Paths ───────────────────────────────────────────────────
@@ -60,7 +61,7 @@ DEFAULT_PAYGATE_TIER = os.environ.get("DEFAULT_PAYGATE_TIER", "PAYGATE_TIER_TWO"
 # /api/provider-jobs. See agent/sdk/services/assistant_provider.py and
 # agent/worker/assistant_worker.py for the full protocol.
 # Default media provider for requests that don't specify one ("flow" |
-# "assistant" | "muse2api" | any registered provider name). MEDIA_PROVIDER is kept as a
+# "assistant" | "muse2api" | "grok" | any registered provider name). MEDIA_PROVIDER is kept as a
 # legacy alias — DEFAULT_PROVIDER wins if both are set.
 DEFAULT_PROVIDER = os.environ.get(
     "DEFAULT_PROVIDER", os.environ.get("MEDIA_PROVIDER", "flow")
@@ -88,6 +89,35 @@ MUSE2API_COOLDOWN_S = float(os.environ.get("MUSE2API_COOLDOWN_S", "0"))
 # muse.ai takes a first frame only. With this on, chained scenes drop the end
 # frame and r2v renders as i2v; off, both fail loudly (same rule as Flow).
 MUSE2API_ALLOW_DEGRADED = os.environ.get("MUSE2API_ALLOW_DEGRADED", "0") == "1"
+
+# "grok": render through Grok Imagine using the signed-in Grok CLI account
+# (`grok login`, SuperGrok quota — no API key). Each job is one headless
+# `grok -p` run allowed exactly one Imagine tool. Available while the `grok`
+# binary is on PATH. See agent/sdk/services/grok_provider.py.
+GROK_BIN = os.environ.get("GROK_BIN", "grok")
+GROK_HOME = Path(os.environ.get("GROK_HOME", str(Path.home() / ".grok"))).expanduser()
+# The chat model that drives the tool call — any model works, it only relays
+# arguments, so the cheapest effort is the right one. Empty = the CLI default.
+GROK_AGENT_MODEL = os.environ.get("GROK_AGENT_MODEL", "")
+GROK_AGENT_EFFORT = os.environ.get("GROK_AGENT_EFFORT", "low")
+# Runs happen outside the repo so grok does not load this project's AGENTS.md
+# and skills into every media call.
+GROK_WORK_DIR = Path(os.environ.get(
+    "GROK_WORK_DIR", str(Path(tempfile.gettempdir()) / "flowkit-grok-media"))).expanduser()
+GROK_VIDEO_RESOLUTION = os.environ.get("GROK_VIDEO_RESOLUTION", "720p")  # 480p | 720p
+# Clip lengths the Grok CLI accepts. A scene's duration is rounded UP to the
+# nearest one (8s -> 10s); /fk-concat-fit-narrator trims to the narration.
+GROK_VIDEO_DURATIONS = tuple(sorted(
+    int(x) for x in os.environ.get("GROK_VIDEO_DURATIONS", "6,10").split(",") if x.strip()))
+GROK_VIDEO_SECONDS = int(os.environ.get("GROK_VIDEO_SECONDS", "6"))
+GROK_TIMEOUT_S = float(os.environ.get("GROK_TIMEOUT_S", "900"))
+# Parallel Imagine calls through one account choke (grokkit, 2026-09), so one
+# at a time unless told otherwise.
+GROK_MAX_CONCURRENT = int(os.environ.get("GROK_MAX_CONCURRENT", "1"))
+GROK_COOLDOWN_S = float(os.environ.get("GROK_COOLDOWN_S", "0"))
+# Upload every Grok image to Flow and use Flow's media_id, so a Grok image can
+# feed a Flow video (or any other Flow step). Needs the extension connected.
+GROK_UPLOAD_TO_FLOW = os.environ.get("GROK_UPLOAD_TO_FLOW", "0") == "1"
 
 # ─── Worker ──────────────────────────────────────────────────
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))

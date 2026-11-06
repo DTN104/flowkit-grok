@@ -52,7 +52,7 @@ curl -s "http://127.0.0.1:8100/api/provider-jobs?limit=20"
 ```
 
 Bucket the failures by `error_message` prefix, print a table, and for each bucket give the fix from the taxonomy.
-For requests with a `provider` other than `flow` or `muse2api`, also read the linked
+For requests with a `provider` other than `flow`, `muse2api` or `grok`, also read the linked
 provider job (`provider_job_id` on the request row): a `QUEUED` job with no
 worker means `assistant_worker.py` isn't running; a `FAILED` job carries the
 worker's `error_message`.
@@ -240,6 +240,9 @@ means the CLI binary is missing, not that the video is bad.
 | `agy CLI failed (rc=1): invalid model selection ... conflicts with --effort=` | agy's slugs name their own effort (`gemini-3.8-flash-low`), so model and effort cannot both be set | Clear one of them. The API rejects the pair with a 400; this only reaches the CLI from a hand-edited `providers.json` |
 | `codex CLI failed (rc=1): ... Your workspace is out of credits` | The OpenAI workspace has no balance. `installed: true` only means the binary is on PATH | Refill, or switch the role to `claude`/`agy` |
 | `codex CLI exited cleanly but wrote no answer to its output file` | codex returned success but produced nothing | Re-run; if it repeats, switch provider |
+| `grok CLI answered in 1 turn without reading the contact sheets` | grok wrote the review from the prompt text without calling `read_file` — the score cannot be trusted | Re-run. If it repeats, check `_GROK_READ_STEER` is still in the prompt. **Do not** add `--always-approve`; `read_file` never prompts |
+| `grok CLI returned non-JSON output: You are not authenticated` | grok is signed out | Run `grok login` once in a terminal |
+| `grok CLI stopped with stopReason='max_tokens'` (or other) | grok hit a limit before finishing its answer | Re-run, or raise effort / switch model |
 | `<provider> CLI timed out after Ns` | The review exceeded `REVIEW_CLI_TIMEOUT_S` (default 120) | Raise the env var, or lower `REVIEW_FPS_*` / `REVIEW_MAX_FRAMES` so there is less to look at |
 | `review answer had an error entry with no usable severity (expected one of ['CRITICAL', 'HIGH', 'MINOR']): ...` | The model graded an error with something outside the three severities. `has_critical_errors`, the `character_consistency` cap and the fix guide all branch on that exact string, so anything else silently disables all three — the model flagged a defect and the score would not show it | Read the quoted entry. A model that keeps doing this is not following the rubric; switch the role to another one |
 | `Scene <id>: review answer needed repair — N error field(s) defaulted, M usable segment(s) unreadable` (warning, not a failure) | A near-miss field name (`timeRange` for `time_range`) or a missing description. Repaired, because losing those costs context but cannot move a score | Nothing required. A rising count means the model is drifting from the rubric |
@@ -291,6 +294,25 @@ own OpenAI error code. Check the gateway with `curl -s $MUSE2API_URL/readyz`.
 | `muse2api timeout` | Image call or video task exceeded `MUSE2API_TIMEOUT_S` | Check the gateway logs; raise the env var if renders are just slow |
 | `muse2api has no end-frame input for chained video` | Chained scene on muse2api | `MUSE2API_ALLOW_DEGRADED=1` (plain i2v), or render that scene on `flow` |
 | `... does not support job kind 'edit_image'` / `'upscale'` | Not offered by muse.ai | Use `flow` for edits and upscale |
+
+### J. Grok Imagine errors (`provider: grok`)
+
+Generation runs through the Grok CLI on the signed-in account (`grok login`).
+Errors start with `GROK_QUOTA:`, `GROK_MODERATION:` or `grok:` and quote the
+Imagine tool's own message.
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `GROK_QUOTA: ... HTTP 403 ... personal-team-blocked:spending-limit` | The account has no Imagine quota left, or no SuperGrok plan | Wait for the quota to reset or upgrade at grok.com/supergrok. If the plan changed recently, `grok logout && grok login`. The request is FAILED, not retried — re-queue it after |
+| `GROK_ZDR: reference_to_video is unavailable while Grok CLI privacy (ZDR) mode is on` | Zero-data-retention mode is on in the Grok CLI; video tools refuse to run (images still work) | The account owner's choice: turn off `/privacy` inside `grok`, or configure a ZDR video bucket (docs.x.ai/build/settings/zdr-video-storage). Not retried |
+| `GROK_MODERATION: ...` | Imagine refused the prompt or image | Change the prompt/source. Do not paraphrase to slip past the filter |
+| `grok: image_gen produced no media: ... error sending request for url (https://api.x.ai/...)` | The Grok CLI's own request to api.x.ai dropped — common (about 1 call in 3) and it goes through when repeated. The provider already retried once before reporting it | Nothing, the worker retries with backoff. If it never succeeds, check `curl https://api.x.ai/v1/models` answers (401 is fine) — a sandbox or proxy may block it |
+| `grok: ... failed (rc=1): ... — run \`grok login\`` | CLI signed out | `grok login` once in a terminal |
+| `grok: the agent did not call image_gen` | The relaying agent answered instead of calling the tool | Retry; if it repeats, set `GROK_AGENT_MODEL` to another model |
+| `grok: ... timed out after 900s` | Render slower than `GROK_TIMEOUT_S` | Raise `GROK_TIMEOUT_S`; media that lands before the kill is still used |
+| `grok.available: false` in `/api/providers/status` | `grok` not on PATH, or `GROK_UPLOAD_TO_FLOW=1` with the extension disconnected | Install the CLI / fix `GROK_BIN`; or reconnect the extension |
+| `grok: GROK_UPLOAD_TO_FLOW=1 but the Flow extension is not connected` | Flow upload is on but Flow is down | Reconnect the extension or set `GROK_UPLOAD_TO_FLOW=0` |
+| `... does not support job kind 'upscale'` / `'audio'` | Not offered by Grok | Use `flow` for upscale, local TTS for narration |
 
 ## Output format
 

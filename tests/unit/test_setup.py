@@ -36,6 +36,7 @@ def sandbox(setup_mod, monkeypatch, tmp_path):
         setup_mod, "LEGACY_GEMINI_COMMANDS_DIR", tmp_path / ".gemini" / "commands" / "fk")
     monkeypatch.setattr(setup_mod, "LEGACY_GEMINI_MD", tmp_path / "GEMINI.md")
     monkeypatch.setattr(setup_mod, "ANTIGRAVITY_SKILLS_DIR", tmp_path / ".agents" / "skills")
+    monkeypatch.setattr(setup_mod, "GROK_SKILLS_DIR", tmp_path / ".grok" / "skills")
     (tmp_path / "skills").mkdir()
     (tmp_path / "skills" / "fk-demo.md").write_text("# fk-demo — A demo skill\n", encoding="utf-8")
     return tmp_path
@@ -47,7 +48,7 @@ def sandbox(setup_mod, monkeypatch, tmp_path):
 class TestRetiredGeminiTarget:
     def test_gemini_is_not_a_generator_any_more(self, setup_mod):
         assert "gemini" not in setup_mod.TOOLS
-        assert set(setup_mod.TOOLS) == {"claude", "codex", "antigravity"}
+        assert set(setup_mod.TOOLS) == {"claude", "codex", "antigravity", "grok"}
         assert not hasattr(setup_mod, "generate_gemini")
         assert not hasattr(setup_mod, "generate_gemini_md")
 
@@ -57,6 +58,18 @@ class TestRetiredGeminiTarget:
         assert count > 0
         assert (sandbox / ".agents" / "skills" / "fk-demo" / "SKILL.md").exists()
 
+    def test_grok_generator_creates_skills_and_agents_md(self, setup_mod, sandbox):
+        skills = setup_mod.discover_skills()
+        assert setup_mod.generate_grok(skills) == 1
+        skill_md = (sandbox / ".grok" / "skills" / "fk-demo" / "SKILL.md").read_text()
+        assert skill_md.startswith("---\nname: fk-demo\n")
+        assert "Grok CLI Instructions" in (sandbox / "AGENTS.md").read_text()
+
+    def test_clean_removes_grok_skills(self, setup_mod, sandbox):
+        setup_mod.generate_grok(setup_mod.discover_skills())
+        setup_mod.do_clean()
+        assert not list((sandbox / ".grok" / "skills").glob("fk-*"))
+        assert not (sandbox / "AGENTS.md").exists()
 
     def test_a_stale_state_file_naming_gemini_does_not_crash_sync(
         self, setup_mod, sandbox, capsys

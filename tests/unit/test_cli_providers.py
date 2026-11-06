@@ -17,10 +17,12 @@ from agent.services.video_reviewer import (
     _run_claude_cli,
     _run_agy_cli,
     _run_codex_cli,
+    _run_grok_cli,
     _analyze_cli,
     _build_prompt,
     _frame_filter,
     _parse_agy_envelope,
+    _parse_grok_envelope,
 )
 from agent.services import cli_providers
 from agent.api import providers as providers_api
@@ -328,6 +330,7 @@ class TestStdinIsClosed:
     @pytest.mark.parametrize("runner,stdout", [
         (_run_claude_cli, b"ok"),
         (_run_agy_cli, None),
+        (_run_grok_cli, json.dumps({"text": "ok", "stopReason": "end_turn", "num_turns": 2}).encode()),
     ])
     async def test_stdin_is_devnull(self, runner, stdout):
         proc = make_proc(stdout=stdout if stdout is not None else agy_envelope("ok"), returncode=0)
@@ -1058,3 +1061,93 @@ class TestFrameFilter:
         timestamps."""
         monkeypatch.setattr("agent.services.video_reviewer._has_drawtext", lambda: False)
         assert _frame_filter(4.0) == "fps=4.0,scale=320:-1"
+
+
+# ---------------------------------------------------------------------------
+# grok
+# ---------------------------------------------------------------------------
+
+def grok_envelope(text="ok", stop="end_turn", turns=2):
+    return json.dumps({"text": text, "stopReason": stop, "num_turns": turns}).encode()
+
+
+class TestRunGrokCli:
+    @pytest.mark.asyncio
+    async def test_argv_allows_only_read_file_and_runs_in_the_sheets_dir(self):
+        proc = make_proc(stdout=grok_envelope("answer"))
+        with patch(
+            "agent.services.video_reviewer.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            result = await _run_grok_cli(
+                "analyze", model="grok-4.7", effort="high", add_dirs=("/tmp/sheets",))
+        argv = mock_exec.call_args.args
+        assert argv[:3] == ("grok", "-p", "analyze")
+        assert argv[argv.index("--tools") + 1] == "read_file"
+        assert argv[argv.index("--output-format") + 1] == "json"
+        assert argv[argv.index("--cwd") + 1] == "/tmp/sheets"
+        assert argv[argv.index("--model") + 1] == "grok-4.7"
+        assert argv[argv.index("--effort") + 1] == "high"
+        assert "--always-approve" not in argv
+        assert result == "answer"
+
+
+class TestParseGrokEnvelope:
+    def test_returns_text(self):
+        assert _parse_grok_envelope(grok_envelope("hi").decode()) == "hi"
+
+    def test_single_turn_answer_is_refused(self):
+        """One turn means no read_file call happened — the review was written
+        from the prompt alone."""
+        with pytest.raises(RuntimeError, match="without reading"):
+            _parse_grok_envelope(grok_envelope("{}", turns=1).decode())
+
+    def test_non_end_turn_stop_is_an_error(self):
+        with pytest.raises(RuntimeError, match="max_tokens"):
+            _parse_grok_envelope(grok_envelope("{", stop="max_tokens").decode())
+
+    @pytest.mark.parametrize("raw,match", [
+        ("", "no output"),
+        ("You are not authenticated.", "non-JSON"),
+        (json.dumps({"text": "", "stopReason": "end_turn", "num_turns": 3}), "empty"),
+    ])
+    def test_silences_are_explained(self, raw, match):
+        with pytest.raises(RuntimeError, match=match):
+            _parse_grok_envelope(raw)
+
+
+class TestGrokAnalyzeDispatch:
+    @pytest.mark.asyncio
+    async def test_grok_gets_the_read_steering(self):
+        captured = {}
+        with patch("agent.services.video_reviewer.config.CLI_PROVIDERS", {"active": "grok"}), \
+             patch("agent.services.video_reviewer._build_prompt", return_value="BASE_PROMPT"), \
+             patch("agent.services.video_reviewer._run_grok_cli",
+                   new=AsyncMock(side_effect=capture_runner(captured))):
+            await _analyze_cli([Path("/tmp/s.jpg")], 9, 4.0, {}, timestamped=True)
+        assert "Read the image at /tmp/s.jpg" in captured["prompt"]
+        assert "Do NOT run any shell command" in captured["prompt"]
+        assert captured["add_dirs"] == ("/tmp",)
+
+
+class TestGrokCatalog:
+    def test_reads_the_on_disk_cache_and_skips_hidden(self, monkeypatch, tmp_path):
+        cache = tmp_path / "models_cache.json"
+        cache.write_text(json.dumps({"models": {
+            "grok-4.7": {"info": {"id": "grok-4.7", "name": "Grok 4.7", "hidden": False,
+                                  "reasoning_efforts": [{"id": "high"}, {"id": "low"}]}},
+            "grok-secret": {"info": {"id": "grok-secret", "hidden": True}},
+        }}))
+        monkeypatch.setattr(cli_providers, "_GROK_MODELS_CACHE", cache)
+        assert cli_providers._list_grok_models() == [
+            {"id": "grok-4.7", "label": "Grok 4.7", "efforts": ["high", "low"]}]
+
+    def test_missing_cache_is_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_providers, "_GROK_MODELS_CACHE", tmp_path / "nope.json")
+        assert cli_providers._list_grok_models() == []
+
+    def test_resolve_role_accepts_grok(self, monkeypatch):
+        monkeypatch.setattr(cli_providers.config, "CLI_PROVIDERS", {
+            "roles": {"video_review": {"provider": "grok", "model": "grok-4.7", "effort": "xhigh"}}})
+        assert cli_providers.resolve_role("video_review") == {
+            "provider": "grok", "model": "grok-4.7", "effort": "xhigh"}

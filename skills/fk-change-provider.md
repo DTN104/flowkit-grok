@@ -1,6 +1,6 @@
 # fk-change-provider — View & Switch the Reviewer for a Role
 
-View or change which reviewer (`muse`, `claude`, `agy`, `codex`) — and which model and
+View or change which reviewer (`muse`, `claude`, `agy`, `codex`, `grok`) — and which model and
 reasoning effort — runs each AI role. One role exists today: `video_review`,
 the vision analysis behind `/fk-review-video`.
 
@@ -8,12 +8,12 @@ the vision analysis behind `/fk-review-video`.
   skills): no CLI, no model, no effort. The review flow becomes contact
   sheets → hand scoring with your own vision → submit (see
   `/fk-review-video` step 3a). Official provider, opt-in per role.
-- `claude` / `agy` / `codex` = AI CLIs the server shells out to.
+- `claude` / `agy` / `codex` / `grok` = AI CLIs the server shells out to.
 
 Usage:
 - `/fk-change-provider` — show current status
 - `/fk-change-provider list` — show current status
-- `/fk-change-provider set <muse|claude|agy|codex>` — switch the provider
+- `/fk-change-provider set <muse|claude|agy|codex|grok>` — switch the provider
 - `/fk-change-provider set <provider> --model <id>` — switch provider and model (CLIs only)
 - `/fk-change-provider set <provider> --effort <level>` — switch provider and effort (CLIs only)
   (for `agy`, model and effort are mutually exclusive — see Step 2)
@@ -49,6 +49,7 @@ Then the providers:
 | claude | `claude` | Yes | Yes | low, medium, high, xhigh, max |
 | agy | `agy` | Yes | Yes | low, medium, high |
 | codex | `codex` | Yes | No | low, medium, high, xhigh, max |
+| grok | `grok` | Yes | Yes | low, medium, high, xhigh, max |
 
 - `Installed` reflects whether the binary is found on PATH (`muse` needs none).
 - `Tested` reflects the live `<binary> --version` probe (populated because of
@@ -126,7 +127,7 @@ Confirm `roles.video_review` matches what you set. Changes are **hot-reloaded**
 ## Notes
 
 - `claude` = Claude Code CLI (default) · `agy` = Google Antigravity CLI ·
-  `codex` = OpenAI Codex CLI
+  `codex` = OpenAI Codex CLI · `grok` = xAI Grok CLI
 - **`codex` needs two things beyond the binary**: a one-time `codex login`
   (interactive OAuth in a terminal), and credits on its OpenAI workspace. With
   no balance every review fails with `ERROR: Your workspace is out of credits`.
@@ -138,5 +139,10 @@ Confirm `roles.video_review` matches what you set. Changes are **hot-reloaded**
   the prompt.
 - `codex` runs `--sandbox read-only`. `-i` hands it the image bytes directly,
   so it needs no shell and no writable filesystem.
+- `grok` runs with `--tools read_file` — every other built-in tool (shell,
+  edit, web, subagents) is removed, not just gated, so no `--always-approve`
+  is needed. It needs a one-time `grok login`. Its model list comes from
+  `~/.grok/models_cache.json`; unlisted slugs (custom models from
+  `~/.grok/config.toml`) are allowed.
 - `agent/providers.json` is the file behind all of this and is safe to edit by
   hand; the next API call re-reads it.

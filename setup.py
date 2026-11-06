@@ -7,6 +7,7 @@ Usage:
     python setup.py                  # Interactive: pick your AI tool(s)
     python setup.py --tool claude    # Generate for Claude Code
     python setup.py --tool codex     # Generate for Codex
+    python setup.py --tool grok      # Generate for Grok CLI
     python setup.py --tool all       # Generate for all tools
     python setup.py sync             # Re-sync all previously selected tools
     python setup.py clean            # Remove all generated tool configs
@@ -19,7 +20,7 @@ and `CLAUDE.md` are all absent from a print-mode run's context even inside a
 trusted folder. agy's own commands come from its plugin system
 (`agy plugin import`), which imports extensions rather than command files.
 
-`agy` is still a first-class part of Flow Kit — as one of the three AI CLIs
+`agy` is still a first-class part of Flow Kit — as one of the four AI CLIs
 that can run video review. That is configured in `agent/providers.json` via
 `/fk-change-provider` or the dashboard, not here: this script generates
 per-project command files for the CLI you *drive* Flow Kit from.
@@ -36,6 +37,7 @@ SKILLS_DIR = ROOT / "skills"
 CLAUDE_COMMANDS_DIR = ROOT / ".claude" / "commands"
 AGENTS_MD = ROOT / "AGENTS.md"
 ANTIGRAVITY_SKILLS_DIR = ROOT / ".agents" / "skills"
+GROK_SKILLS_DIR = ROOT / ".grok" / "skills"
 STATE_FILE = ROOT / ".fk-setup.json"
 
 # Nothing generates these any more; `clean` still removes them so an install
@@ -85,9 +87,9 @@ def generate_claude(skills):
     return count
 
 
-def generate_antigravity(skills):
-    """Create .agents/skills/fk-<name>/SKILL.md for Antigravity IDE."""
-    ANTIGRAVITY_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+def _write_skill_dirs(skills, skills_dir):
+    """Write <skills_dir>/fk-<name>/SKILL.md — the layout agy and grok share."""
+    skills_dir.mkdir(parents=True, exist_ok=True)
     count = 0
     for skill in skills:
         name = skill["name"]
@@ -106,7 +108,7 @@ def generate_antigravity(skills):
         else:
             body = content
 
-        dest_dir = ANTIGRAVITY_SKILLS_DIR / skill_id
+        dest_dir = skills_dir / skill_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / "SKILL.md"
 
@@ -120,6 +122,12 @@ def generate_antigravity(skills):
         )
         dest.write_text(skill_md, encoding="utf-8")
         count += 1
+    return count
+
+
+def generate_antigravity(skills):
+    """Create .agents/skills/fk-<name>/SKILL.md for Antigravity IDE."""
+    count = _write_skill_dirs(skills, ANTIGRAVITY_SKILLS_DIR)
     print(f"Generated {count} Antigravity skills in .agents/skills/")
     return count
 
@@ -241,6 +249,20 @@ def generate_codex(skills):
     return len(skills)
 
 
+def generate_grok(skills):
+    """Create .grok/skills/fk-<name>/SKILL.md plus AGENTS.md for Grok CLI.
+
+    grok loads project skills from .grok/skills/ and project rules from
+    AGENTS.md, so the rules a non-Claude agent needs reach it the same way
+    they reach codex.
+    """
+    count = _write_skill_dirs(skills, GROK_SKILLS_DIR)
+    print(f"Generated {count} Grok skills in .grok/skills/")
+    AGENTS_MD.write_text(_agents_md_body(skills, "Grok CLI Instructions"), encoding="utf-8")
+    print(f"Generated AGENTS.md ({len(skills)} skills)")
+    return count
+
+
 def save_state(tools, skill_count):
     state = {
         "tools": tools,
@@ -263,6 +285,7 @@ TOOLS = {
     "claude": generate_claude,
     "codex": generate_codex,
     "antigravity": generate_antigravity,
+    "grok": generate_grok,
 }
 
 
@@ -286,7 +309,8 @@ def do_interactive(skills):
     print("  [1] Claude Code       (.claude/commands/)")
     print("  [2] Codex CLI         (AGENTS.md)")
     print("  [3] Antigravity IDE   (.agents/skills/)")
-    print("  [4] All tools")
+    print("  [4] Grok CLI          (.grok/skills/ + AGENTS.md)")
+    print("  [5] All tools")
     print()
 
     raw = input("Select (comma-separated, e.g. 1,2,3): ").strip()
@@ -294,7 +318,7 @@ def do_interactive(skills):
         print("No selection made. Exiting.")
         return
 
-    mapping = {"1": "claude", "2": "codex", "3": "antigravity", "4": "all"}
+    mapping = {"1": "claude", "2": "codex", "3": "antigravity", "4": "grok", "5": "all"}
     choices = [c.strip() for c in raw.split(",")]
 
     tools = []
@@ -355,9 +379,11 @@ def do_clean():
             f.unlink()
             removed.append(str(f))
 
-    # Antigravity skills
-    if ANTIGRAVITY_SKILLS_DIR.exists():
-        for d in ANTIGRAVITY_SKILLS_DIR.glob("fk-*"):
+    # Antigravity and Grok skills
+    for skills_dir in (ANTIGRAVITY_SKILLS_DIR, GROK_SKILLS_DIR):
+        if not skills_dir.exists():
+            continue
+        for d in skills_dir.glob("fk-*"):
             if d.is_dir():
                 for f in d.glob("*"):
                     f.unlink()

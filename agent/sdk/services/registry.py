@@ -13,6 +13,8 @@ Built-ins:
       Always available, needs no Chrome.
     - ``muse2api`` — a muse2api gateway (muse.ai behind an OpenAI-compatible
       API) over HTTP. Available once ``MUSE2API_URL`` is set.
+    - ``grok`` — Grok Imagine through the signed-in Grok CLI (``grok login``).
+      Available while the ``grok`` binary is on PATH.
 
 Extra backends (a Sora adapter, a local SDXL worker, …) can be registered
 at startup and are then selectable per request through the ``provider``
@@ -27,6 +29,7 @@ from typing import TYPE_CHECKING
 from agent.config import DEFAULT_PROVIDER
 from agent.sdk.services.assistant_provider import AssistantProvider
 from agent.sdk.services.flow_provider import FlowProvider
+from agent.sdk.services.grok_provider import GrokProvider
 from agent.sdk.services.muse2api_provider import Muse2APIProvider
 from agent.sdk.services.provider_base import MediaProvider
 
@@ -49,6 +52,8 @@ class ProviderRegistry:
             providers["flow"] = FlowProvider(flow_client)
         providers["assistant"] = AssistantProvider()
         providers["muse2api"] = Muse2APIProvider()
+        # Holds the Flow client only to upload images when GROK_UPLOAD_TO_FLOW=1.
+        providers["grok"] = GrokProvider(flow_client)
         if extra:
             providers.update(extra)
         self._providers = providers

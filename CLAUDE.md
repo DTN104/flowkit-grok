@@ -39,6 +39,21 @@ that change how you work:
   to plain i2v; video upscale has no fallback. See `docs/CAPTURE.md`.
 - **A poll saying "Media not found." is not a failure.** Finished jobs report it.
 
+## Grok Imagine (`provider: grok`)
+
+This repo also renders with **Grok Imagine on the account signed in to the Grok
+CLI** (`grok login`, no API key). Flow is still the default — pass
+`"provider": "grok"` per request in `POST /api/requests/batch`, or set
+`DEFAULT_PROVIDER=grok`. Everything else (projects, batch, review, concat,
+upload) is unchanged.
+
+- Images: `image_gen`, or `image_edit` when the scene has entity refs.
+- Videos: `reference_to_video`; chained scenes (start + end frame) work, unlike
+  on the Flow batch path. Clips are 6s or 10s (scene duration rounds up), ≤720p.
+- No upscale and no TTS on grok.
+- `GROK_QUOTA:` / `GROK_MODERATION:` errors fail once and are not retried —
+  see `/fk-doctor` section J.
+
 ## Skills
 
 | Skill | When to use |

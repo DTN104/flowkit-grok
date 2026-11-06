@@ -46,6 +46,8 @@ Standalone system to generate AI videos via Google Flow. Uses a Chrome extension
   <img src="docs/agents/v2/codex.svg" height="56" alt="Codex" title="Codex" />
   &nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/agents/v2/agy.svg" height="56" alt="Antigravity" title="Antigravity (agy)" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <strong>Grok</strong>
 </p>
 
 FlowKit's 36 skills (`skills/fk-*.md`) are plain Markdown recipes any AI coding
@@ -58,6 +60,7 @@ agent can read and follow. Review providers are swappable at runtime
 | **Claude Code** | Auto-loaded via `CLAUDE.md`, native `/fk-*` slash commands | `claude` — default `video_review` role |
 | **Codex CLI** | Reads `skills/fk-<name>.md` via `AGENTS.md`; vision on contact sheets for self-review | `codex` — OpenAI Codex CLI, or `muse` (= the agent itself) for hand scoring |
 | **agy** (Google Antigravity) | Reads skill files manually; vision on contact sheets for self-review | `agy` — Antigravity CLI, or `muse` (= the agent itself) for hand scoring |
+| **Grok CLI** (xAI) | `python setup.py --tool grok` → `.grok/skills/fk-*` + `AGENTS.md` | `grok` — Grok CLI, or `muse` (= the agent itself) for hand scoring |
 
 ## Showcase
 
@@ -285,6 +288,52 @@ extension are not needed for muse2api requests. Full setup:
 | `MUSE2API_POLL_S` | `5` | Video task poll interval. |
 | `MUSE2API_MAX_CONCURRENT` / `MUSE2API_COOLDOWN_S` | `2` / `0` | Worker throttling for this provider. |
 | `MUSE2API_ALLOW_DEGRADED` | `0` | `1` renders chained scenes and r2v as plain i2v (muse.ai takes a first frame only). |
+| `GROK_BIN` | `grok` | Grok CLI used by the `grok` media provider (signed in with `grok login`). |
+| `GROK_VIDEO_RESOLUTION` | `720p` | `480p` (cheap tests) or `720p`. |
+| `GROK_VIDEO_DURATIONS` / `GROK_VIDEO_SECONDS` | `6,10` / `6` | Clip lengths the CLI accepts; a scene's `duration` rounds up to one (8s → 10s). The default applies when a scene has none. |
+| `GROK_TIMEOUT_S` | `900` | Max wall time for one Grok CLI run. |
+| `GROK_MAX_CONCURRENT` / `GROK_COOLDOWN_S` | `1` / `0` | Worker throttling. Parallel Imagine calls on one account choke, hence 1. |
+| `GROK_UPLOAD_TO_FLOW` | `0` | `1` uploads every Grok image to Flow and stores Flow's media_id, so a Grok image can feed a Flow video. Needs the extension connected. |
+| `GROK_AGENT_MODEL` / `GROK_AGENT_EFFORT` | CLI default / `low` | Chat model that relays the tool call — it only copies arguments, so keep it cheap. |
+| `GROK_WORK_DIR` | `$TMPDIR/flowkit-grok-media` | Working dir for the runs (outside the repo, so grok does not load this project's AGENTS.md). |
+
+### Grok Media Provider (`provider: grok`)
+
+Renders images and videos with **Grok Imagine on the account signed in to the
+Grok CLI** (`grok login`, SuperGrok quota) — no xAI API key. Flow stays the
+default; pick Grok per request with `"provider": "grok"` or for everything with
+`DEFAULT_PROVIDER=grok`. Project creation, the batch API, review, concat and
+upload are unchanged.
+
+| Flow Kit job | Grok tool |
+|---|---|
+| Reference / scene image, no refs | `image_gen` |
+| Scene image with entity refs | `image_edit` (refs as sources, ≤5) |
+| Edit image | `image_edit` (source first, then refs) |
+| Video (i2v), incl. chained scenes | `reference_to_video` (`first_frame`, end frame → `last_frame`) |
+| Video from refs (r2v) | `reference_to_video` (`images`, ≤14) |
+| Upscale, TTS | not offered — use `flow` / local TTS |
+
+Each job is one headless `grok -p` run that may use exactly one Imagine tool
+(`--tools <tool> --allow <tool> --permission-mode dontAsk`, shell and MCP
+denied). The tools take no output path; the file is collected from
+`~/.grok/sessions/<cwd>/<session_id>/` and copied to `output/_shared/grok/`
+as a `file://` URL. Chaining (start + end frame), which the Flow batch path
+cannot do, works natively here.
+
+```bash
+grok login                                   # once
+curl -s http://127.0.0.1:8100/api/providers/status | python3 -m json.tool   # grok.available: true
+curl -X POST http://127.0.0.1:8100/api/requests/batch -H "Content-Type: application/json" \
+  -d '{"requests": [{"type": "GENERATE_IMAGE", "scene_id": "...", "project_id": "...",
+                     "video_id": "...", "orientation": "VERTICAL", "provider": "grok"}]}'
+```
+
+A plan or quota error (`GROK_QUOTA: ...`, e.g. HTTP 403
+`personal-team-blocked:spending-limit`) or a moderation block
+(`GROK_MODERATION: ...`) fails the request once instead of retrying. So does
+`GROK_ZDR: ...`: video tools do not run while the Grok CLI's zero-data-retention
+(`/privacy`) mode is on — turn it off in `grok` or configure a ZDR video bucket.
 
 ### Assistant Media Provider (`MEDIA_PROVIDER=assistant`)
 
@@ -790,15 +839,16 @@ Skills are `.md` recipes any AI coding-assistant CLI can read and follow — thi
 | Muse | Skills auto-loaded | Native tool calls (`muse.read` for files/images) |
 | Claude Code | `CLAUDE.md` (auto-loaded) | Native `/fk-*` slash commands |
 | Codex CLI | `AGENTS.md` → reads `CLAUDE.md` | User says `/fk-<name>`, agent reads `skills/fk-<name>.md` |
+| Grok CLI | `.grok/skills/fk-*/SKILL.md` + `AGENTS.md` | Native `/fk-*` skills |
 
 The Gemini CLI target was dropped in v1.3.1 — the CLI is retired, and its
 replacement `agy` reads none of what that target generated (see the changelog).
-`agy` is still supported, as one of the three CLIs that can run video review —
+`agy` is still supported, as one of the four CLIs that can run video review —
 that is configured in `agent/providers.json`, not by `setup.py`.
 
 ### AI Vision Providers (Video Review)
 
-Separate from the table above — this is about **which backend does the vision analysis** for `/fk-review-video`. Four reviewers are supported and swappable at runtime, no restart required:
+Separate from the table above — this is about **which backend does the vision analysis** for `/fk-review-video`. Five reviewers are supported and swappable at runtime, no restart required:
 
 | Provider | Binary | Reasoning efforts | Model catalog | Setup |
 |----------|--------|-------------------|---------------|-------|
@@ -806,6 +856,7 @@ Separate from the table above — this is about **which backend does the vision 
 | `claude` | Claude Code CLI | `low` `medium` `high` `xhigh` `max` | aliases (`sonnet`, `opus`, `haiku`, `fable`) or any full model name | Install the CLI, sign in once |
 | `agy` | Google Antigravity CLI | `low` `medium` `high` | closed — `agy models` is the whole list and agy rejects anything else | Install separately, sign in once |
 | `codex` | OpenAI Codex CLI | `low` `medium` `high` `xhigh` `max` (varies per model) | codex's own on-disk cache, plus slugs newer than it | `npm install -g @openai/codex`, then `codex login` once |
+| `grok` | xAI Grok CLI | `low` `medium` `high` `xhigh` `max` (varies per model) | `~/.grok/models_cache.json`, plus custom models from `~/.grok/config.toml` | `curl -fsSL https://x.ai/cli/install.sh \| bash`, then `grok login` once |
 
 Provider, model and effort are set **per role** — a role being a job an AI
 does for Flow Kit. There is one today, `video_review`; the config is a map so

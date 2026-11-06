@@ -148,6 +148,22 @@ class TestMarkSceneFailed:
 
 class TestHandleFailure:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [
+        "GROK_QUOTA: Imagine quota/plan limit on the signed-in Grok account: HTTP 403",
+        "GROK_MODERATION: Imagine refused the request: blocked by moderation",
+        "GROK_ZDR: reference_to_video is unavailable while Grok CLI privacy (ZDR) mode is on",
+    ])
+    async def test_grok_quota_and_moderation_fail_without_retry(self, error):
+        """A retry cannot refill a plan or change a moderation verdict, and each
+        one spends another agent turn on the Grok account."""
+        req = make_req(retry_count=0)
+        with patch("agent.worker.processor.crud") as mock_crud, \
+             patch("agent.worker.processor._mark_scene_failed", new=AsyncMock()):
+            mock_crud.update_request = AsyncMock()
+            await _handle_failure(req["id"], req, {"error": error})
+        assert mock_crud.update_request.call_args[1]["status"] == "FAILED"
+
+    @pytest.mark.asyncio
     async def test_retries_when_under_max_retries(self):
         """When retry_count+1 < MAX_RETRIES, request should go back to PENDING."""
         req = make_req(retry_count=0)
